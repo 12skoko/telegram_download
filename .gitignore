@@ -1,0 +1,14 @@
+.idea/
+
+log/
+lozip/
+tempfile/
+test/
+old/
+old2/
+downloads/
+download/
+
+session_name.session
+session_name.session-journal
+config.py
