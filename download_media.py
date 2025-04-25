@@ -17,7 +17,34 @@ from telethon.tl.types import (
     Document
 )
 import shutil
-from telethon import utils
+
+
+def format_speed(speed_bytes):
+    """格式化下载速度显示"""
+    for unit in ['B/s', 'KB/s', 'MB/s', 'GB/s']:
+        if speed_bytes < 1024.0:
+            return f"{speed_bytes:.2f} {unit}"
+        speed_bytes /= 1024.0
+    return f"{speed_bytes:.2f} TB/s"
+
+
+def format_size(size_bytes):
+    """格式化文件大小显示"""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.2f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.2f} TB"
+
+
+def format_time(seconds):
+    """格式化时间显示"""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        return f"{seconds // 60:.0f}m {seconds % 60:.0f}s"
+    else:
+        return f"{seconds // 3600:.0f}h {(seconds % 3600) // 60:.0f}m"
 
 
 async def download_media(client, conn, chat_id, message_id, semaphore, progress_dict):
@@ -135,12 +162,36 @@ async def download_media(client, conn, chat_id, message_id, semaphore, progress_
                 progress_dict[message_id] = {'status': 'skipped', 'progress': 100}
                 return
 
-            # 下载文件
-            progress_dict[message_id] = {'status': 'downloading', 'progress': 0}
+            start_time = time.time()
+            last_time = start_time
+            last_bytes = 0
+            speed = "0 B/s"
 
             def progress_callback(current, total):
+                nonlocal last_time, last_bytes, speed
+
+                now = time.time()
+                elapsed = now - last_time
+
+                # 每秒更新一次速度
+                if elapsed >= 1.0:
+                    downloaded = current - last_bytes
+                    speed = format_speed(downloaded / elapsed)
+                    last_time = now
+                    last_bytes = current
+
                 progress = int((current / total) * 100)
-                progress_dict[message_id]['progress'] = progress
+                progress_dict[message_id] = {
+                    'status': 'downloading',
+                    'progress': progress,
+                    'speed': speed,
+                    'downloaded': format_size(current),
+                    'total': format_size(total),
+                    'elapsed': format_time(now - start_time)
+                }
+
+            # 下载文件
+            progress_dict[message_id] = {'status': 'downloading', 'progress': 0}
 
             await client.download_media(
                 message,
@@ -165,12 +216,12 @@ async def download_media(client, conn, chat_id, message_id, semaphore, progress_
             print(f"Error downloading media {chat_id}/{message_id}: {str(e)}")
             progress_dict[message_id] = {'status': 'failed', 'progress': 0, 'error': str(e)}
 
+
 def update_message_state(conn, chat_id, message_id, state):
     """更新message表中指定记录的state字段"""
     cursor = conn.cursor()
     try:
-        sql = "UPDATE message SET state = %s WHERE chat_id = %s AND msg_id = %s"
-        cursor.execute(sql, (state, chat_id, message_id))
+        cursor.execute(f"UPDATE message SET state = {state} WHERE chat_id = {chat_id} AND msg_id = {message_id}")
         conn.commit()
     except Exception as e:
         print(f"Error updating message state for {chat_id}/{message_id}: {str(e)}")
@@ -178,33 +229,52 @@ def update_message_state(conn, chat_id, message_id, state):
     finally:
         cursor.close()
 
+
 def update_media_in_db(conn, media_info):
     cursor = conn.cursor()
 
-    # 检查记录是否已存在
-    cursor.execute("SELECT 1 FROM media WHERE media_id = %s", (media_info['media_id'],))
+    cursor.execute(f"SELECT 1 FROM media WHERE media_id = {media_info['media_id']}")
     exists = cursor.fetchone()
 
     if exists:
-        # 更新现有记录
-        sql = """
-        UPDATE media SET
-            msg_id = %s,
-            chat_id = %s,
-            access_hash = %s,
-            media_type = %s,
-            mime_type = %s,
-            file_size = %s,
-            width = %s,
-            height = %s,
-            duration = %s,
-            date = %s,
-            file_path = %s,
-            attributes = %s,
-            file_name = %s,
-            updated_at = %s
-        WHERE media_id = %s
-        """
+        if config.db_type == 'sqlite':
+            sql = """
+            UPDATE media SET
+                msg_id = ?,
+                chat_id = ?,
+                access_hash = ?,
+                media_type = ?,
+                mime_type = ?,
+                file_size = ?,
+                width = ?,
+                height = ?,
+                duration = ?,
+                date = ?,
+                file_path = ?,
+                attributes = ?,
+                file_name = ?,
+                updated_at = ?
+            WHERE media_id = ?
+            """
+        else:
+            sql = """
+            UPDATE media SET
+                msg_id = %s,
+                chat_id = %s,
+                access_hash = %s,
+                media_type = %s,
+                mime_type = %s,
+                file_size = %s,
+                width = %s,
+                height = %s,
+                duration = %s,
+                date = %s,
+                file_path = %s,
+                attributes = %s,
+                file_name = %s,
+                updated_at = %s
+            WHERE media_id = %s
+            """
         params = (
             media_info['msg_id'],
             media_info['chat_id'],
@@ -223,14 +293,22 @@ def update_media_in_db(conn, media_info):
             media_info['media_id']
         )
     else:
-        # 插入新记录
-        sql = """
-        INSERT INTO media (
-            media_id, msg_id, chat_id, access_hash, media_type, mime_type,
-            file_size, width, height, duration, date, file_path,
-            attributes, file_name, created_at, updated_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """
+        if config.db_type == 'sqlite':
+            sql = """
+            INSERT INTO media (
+                media_id, msg_id, chat_id, access_hash, media_type, mime_type,
+                file_size, width, height, duration, date, file_path,
+                attributes, file_name, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+        else:
+            sql = """
+            INSERT INTO media (
+                media_id, msg_id, chat_id, access_hash, media_type, mime_type,
+                file_size, width, height, duration, date, file_path,
+                attributes, file_name, created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
         params = (
             media_info['media_id'],
             media_info['msg_id'],
@@ -275,11 +353,16 @@ async def download_medias_concurrently(client, conn, medias):
             if status['status'] in ('completed', 'skipped', 'failed')
         )
 
-        downloading = [
-            f"{msg_id}: {status['progress']}%"
-            for msg_id, status in progress_dict.items()
-            if status['status'] == 'downloading'
-        ]
+        downloading = []
+        for msg_id, status in progress_dict.items():
+            if status['status'] == 'downloading':
+                # 构建更详细的下载信息
+                info = f"{msg_id}: {status['progress']}%"
+                if 'speed' in status:
+                    info += f" ({status['speed']})"
+                if 'downloaded' in status and 'total' in status:
+                    info += f" [{status['downloaded']}/{status['total']}]"
+                downloading.append(info)
 
         print(f"\rProgress: {completed}/{total} ({int(completed / total * 100)}%) | Downloading: {', '.join(downloading)}", end='')
         await asyncio.sleep(1)
@@ -289,41 +372,38 @@ async def download_medias_concurrently(client, conn, medias):
 
 
 def get_medias(conn):
-    sqlstr='SELECT chat_id, msg_id FROM telegram.message WHERE chat_id = -1002444549090 AND media_type != "sticker" AND media_type != "MessageMediaWebPage" AND state is NULL'
-    c=conn.cursor()
+    if config.chat_id > 0:
+        chat_id = -config.chat_id
+    else:
+        chat_id = config.chat_id
+    sqlstr = f'SELECT chat_id, msg_id FROM message WHERE chat_id = {chat_id} AND media_type != "sticker" AND media_type != "MessageMediaWebPage" AND state is NULL'
+    c = conn.cursor()
     c.execute(sqlstr)
-    res=c.fetchall()
+    res = c.fetchall()
     return res
 
-# 主程序
+
 async def main():
-    # 初始化数据库
     conn = config.createDBconn()
 
-    # 创建Telegram客户端
     client = TelegramClient(
         config.session_path,
-        api_id=config.api_id,  # 替换为你的API ID
-        api_hash=config.api_hash  # 替换为你的API Hash
+        api_id=config.api_id,
+        api_hash=config.api_hash
     )
     await client.start(phone=config.phone)
 
-    # 获取需要下载的媒体列表 (使用你已有的get_medias()函数)
-    medias = get_medias(conn)  # 返回 [(chat_id, message_id), ...]
+    medias = get_medias(conn)
 
-    # 创建媒体存储目录
     os.makedirs(MEDIA_DIR, exist_ok=True)
 
-    # 并发下载所有媒体文件
     await download_medias_concurrently(client, conn, medias)
 
-    # 关闭连接
     await client.disconnect()
     conn.close()
 
 
 if __name__ == '__main__':
-    # 配置信息
     API_ID = config.api_id
     API_HASH = config.api_hash
     SESSION_NAME = config.session_path

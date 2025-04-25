@@ -13,26 +13,36 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
 class TelegramMessageExporter:
     def __init__(self, client: TelegramClient):
         self.client = client
         self.conn = config.createDBconn()
         self.cursor = self.conn.cursor()
         self.batch_size = 1000  # 每批处理的消息数量
-        self.max_retries = 3    # 最大重试次数
-        self.retry_delay = 5     # 重试延迟(秒)
+        self.max_retries = 3  # 最大重试次数
+        self.retry_delay = 5  # 重试延迟(秒)
+
     async def get_last_processed_id(self, chat_id: int) -> Optional[int]:
         """获取最后处理的message_id"""
         try:
-            self.cursor.execute(
-                "SELECT MAX(msg_id) FROM message WHERE chat_id = %s",
-                (-chat_id,)
-            )
+            if config.db_type=='sqlite':
+                self.cursor.execute(    
+                    "SELECT MAX(msg_id) FROM message WHERE chat_id = ?",
+                    (-chat_id,)
+                )
+            else:
+                self.cursor.execute(
+                    "SELECT MAX(msg_id) FROM message WHERE chat_id = %s",
+                    (-chat_id,)
+                )
             result = self.cursor.fetchone()
             return result[0] if result and result[0] else None
         except Exception as e:
             logger.error(f"获取最后处理ID失败: {e}")
             return None
+
     def message_to_dict(self, message: Message) -> Dict[str, Any]:
         """将Message对象转换为字典"""
         if not isinstance(message, Message):
@@ -55,7 +65,7 @@ class TelegramMessageExporter:
                 media_id = media.document.id
             elif type(media).__name__ == "MessageMediaPhoto":
 
-                media_type='MessageMediaPhoto'
+                media_type = 'MessageMediaPhoto'
                 media_id = media.photo.id
 
             else:
@@ -69,7 +79,7 @@ class TelegramMessageExporter:
                     reaction.count
                 for reaction in message.reactions.results
             }
-        reactions=str(reactions)
+        reactions = str(reactions)
 
         return {
             'msg_id': message.id,
@@ -95,13 +105,13 @@ class TelegramMessageExporter:
             'created_at': datetime.now(),
             'updated_at': datetime.now()
         }
+
     async def insert_messages_batch(self, messages: list) -> bool:
         """批量插入消息到MySQL"""
         if not messages:
             return True
         values = []
         for msg_dict in messages:
-
             values.append((
                 msg_dict['msg_id'],
                 msg_dict['chat_id'],
@@ -126,23 +136,42 @@ class TelegramMessageExporter:
                 msg_dict['created_at'],
                 msg_dict['updated_at']
             ))
-        query = """
-        INSERT INTO message (
-            msg_id, chat_id, user_id, msg_date, edit_date, message, media_id, media_type,
-            fwd_from_chat_id, fwd_from_user_id, fwd_from_channel_post, fwd_from_post_author, fwd_from_date,
-            reply_to_msg_id, reply_to_user_id, views, forwards, grouped_id, post_author, reactions,
-            created_at, updated_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-            edit_date = VALUES(edit_date),
-            message = VALUES(message),
-            media_id = VALUES(media_id),
-            media_type = VALUES(media_type),
-            views = VALUES(views),
-            forwards = VALUES(forwards),
-            reactions = VALUES(reactions),
-            updated_at = VALUES(updated_at)
-        """
+        if config.db_type == 'sqlite':
+            query = """
+            INSERT INTO message (
+                msg_id, chat_id, user_id, msg_date, edit_date, message, media_id, media_type,
+                fwd_from_chat_id, fwd_from_user_id, fwd_from_channel_post, fwd_from_post_author, fwd_from_date,
+                reply_to_msg_id, reply_to_user_id, views, forwards, grouped_id, post_author, reactions,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(msg_id, chat_id) DO UPDATE SET
+                edit_date = excluded.edit_date,
+                message = excluded.message,
+                media_id = excluded.media_id,
+                media_type = excluded.media_type,
+                views = excluded.views,
+                forwards = excluded.forwards,
+                reactions = excluded.reactions,
+                updated_at = excluded.updated_at
+            """
+        else:
+            query = """
+            INSERT INTO message (
+                msg_id, chat_id, user_id, msg_date, edit_date, message, media_id, media_type,
+                fwd_from_chat_id, fwd_from_user_id, fwd_from_channel_post, fwd_from_post_author, fwd_from_date,
+                reply_to_msg_id, reply_to_user_id, views, forwards, grouped_id, post_author, reactions,
+                created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                edit_date = VALUES(edit_date),
+                message = VALUES(message),
+                media_id = VALUES(media_id),
+                media_type = VALUES(media_type),
+                views = VALUES(views),
+                forwards = VALUES(forwards),
+                reactions = VALUES(reactions),
+                updated_at = VALUES(updated_at)
+            """
         retries = 0
         while retries < self.max_retries:
             try:
@@ -158,6 +187,7 @@ class TelegramMessageExporter:
 
         logger.error(f"插入消息失败，已达到最大重试次数 {self.max_retries}")
         return False
+
     async def export_messages(self, chat_id: int):
         """导出消息主函数"""
         last_processed_id = await self.get_last_processed_id(chat_id)
@@ -168,10 +198,10 @@ class TelegramMessageExporter:
             try:
                 messages = []
                 async for message in self.client.iter_messages(
-                    chat_id,
-                    limit=self.batch_size,
-                    offset_id=offset_id,
-                    reverse=True  # 从旧到新处理
+                        chat_id,
+                        limit=self.batch_size,
+                        offset_id=offset_id,
+                        reverse=True  # 从旧到新处理
                 ):
                     msg_dict = self.message_to_dict(message)
                     if msg_dict:
@@ -194,22 +224,20 @@ class TelegramMessageExporter:
                 await asyncio.sleep(self.retry_delay)
                 continue
         logger.info(f"消息导出完成，总共处理了 {total_processed} 条消息")
-# 使用示例
+
+
 async def main():
-    # Telegram客户端配置
     client = TelegramClient(
         config.session_path,
-        api_id=config.api_id,       # 替换为你的API ID
-        api_hash=config.api_hash   # 替换为你的API Hash
+        api_id=config.api_id,
+        api_hash=config.api_hash
     )
-    # 创建导出器实例
     exporter = TelegramMessageExporter(client)
-    # 连接到Telegram
     await client.start(phone=config.phone)
-    # 导出指定聊天ID的消息
-    chat_id = 1002444549090  # 替换为你的群组ID
+    chat_id = config.chat_id
     await exporter.export_messages(chat_id)
-    # 断开连接
     await client.disconnect()
+
+
 if __name__ == '__main__':
     asyncio.run(main())

@@ -4,11 +4,16 @@ log/
 lozip/
 tempfile/
 test/
+test2/
 old/
 old2/
 downloads/
 download/
+output/
 
-session_name.session
-session_name.session-journal
 config.py
+
+*.session
+*.session-journal
+groups.txt
+telegram.db
