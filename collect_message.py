@@ -27,15 +27,17 @@ class TelegramMessageExporter:
     async def get_last_processed_id(self, chat_id: int) -> Optional[int]:
         """获取最后处理的message_id"""
         try:
-            if config.db_type=='sqlite':
-                self.cursor.execute(    
+            if chat_id > 0:
+                chat_id = -chat_id
+            if config.db_type == 'sqlite':
+                self.cursor.execute(
                     "SELECT MAX(msg_id) FROM message WHERE chat_id = ?",
-                    (-chat_id,)
+                    (chat_id,)
                 )
             else:
                 self.cursor.execute(
                     "SELECT MAX(msg_id) FROM message WHERE chat_id = %s",
-                    (-chat_id,)
+                    (chat_id,)
                 )
             result = self.cursor.fetchone()
             return result[0] if result and result[0] else None
