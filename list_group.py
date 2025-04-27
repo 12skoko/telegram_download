@@ -4,7 +4,7 @@ import config
 
 
 async def list_groups():
-    client = TelegramClient(config.session_path, config.api_id, config.api_hash)
+    client = TelegramClient(config.session_path, config.api_id, config.api_hash, proxy=config.proxy)
     await client.start(phone=config.phone, password=config.password)
 
     with open("groups.txt", "w", encoding="utf-8") as f:
@@ -13,5 +13,6 @@ async def list_groups():
             print(f"{dialog.name} (ID: {dialog.id})")
             f.write(f"{dialog.name} (ID: {dialog.id})\n")
     await client.disconnect()
+
 
 asyncio.run(list_groups())

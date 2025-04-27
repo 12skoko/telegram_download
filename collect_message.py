@@ -230,7 +230,8 @@ async def main():
     client = TelegramClient(
         config.session_path,
         api_id=config.api_id,
-        api_hash=config.api_hash
+        api_hash=config.api_hash,
+        proxy=config.proxy
     )
     exporter = TelegramMessageExporter(client)
     await client.start(phone=config.phone)
