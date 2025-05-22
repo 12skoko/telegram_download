@@ -237,8 +237,8 @@ async def main():
     )
     exporter = TelegramMessageExporter(client)
     await client.start(phone=config.phone)
-    chat_id = config.chat_id
-    await exporter.export_messages(chat_id)
+    for chat_id in config.chat_id_list:
+        await exporter.export_messages(chat_id)
     await client.disconnect()
 
 
